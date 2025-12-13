@@ -15,46 +15,38 @@ from feedgen.feed import FeedGenerator
 from datetime import datetime
 from dotenv import load_dotenv, dotenv_values
 
+import re
+from datetime import datetime
+
+from config import cookies
+
 load_dotenv('./.env')
 env = dotenv_values()
 
 
-try:
-    from openllm import chat
-except ImportError:
-    def chat(prompt):
-        """Fallback for openllm.chat if not installed."""
-        return "Sample Title"
+USE_SAFARI = False  
 
 
-USE_SAFARI = True  
-
-
-USERNAME = env['USERNAME']
-PASSWORD = env['PASSWORD']
 profiles = env['PROFILES'].split(',')  
 COOKIES_FILE = env['COOKIES_PATH']
 RSS_OUTPUT_DIR = env['RSS_PATH']
 
 
-TWEETS_PER_PROFILE = 100
+TWEETS_PER_PROFILE = 10
 
 
-MAX_SCROLL_ATTEMPTS = 30
+MAX_SCROLL_ATTEMPTS = 10
 
 
 AFTER_PROFILE_MIN_WAIT = 30  
 AFTER_PROFILE_MAX_WAIT = 60  
 
+DATE_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
 TWEET_SELECTORS = [
     "article[role='article']",
     "div[data-testid='tweet']",
 ]
-
-
-
-
 
 
 def random_sleep(min_sec=2, max_sec=5):
@@ -99,7 +91,7 @@ def load_cookies(driver):
             cookies = pickle.load(f)
         driver.get("https://x.com")
         for cookie in cookies:
-            
+
             if "domain" in cookie and cookie["domain"].startswith("."):
                 cookie["domain"] = "x.com"
             driver.add_cookie(cookie)
@@ -109,38 +101,16 @@ def load_cookies(driver):
 
 def login_to_x(driver):
     """Perform login if cookies are missing or invalid."""
-    driver.get("https://x.com/login")
-    try:
-        
-        username_field = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.NAME, "text"))
-        )
-        username_field.send_keys(USERNAME)
-        username_field.send_keys(Keys.RETURN)
-        random_sleep(2, 4)
-
-        
-        password_field = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.NAME, "password"))
-        )
-        password_field.send_keys(PASSWORD)
-        password_field.send_keys(Keys.RETURN)
-
-        
-        WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "[aria-label='Profile']"))
-        )
-        print("Logged in successfully!")
-        save_cookies(driver)
-    except Exception as e:
-        print(f"Login failed: {e}")
-        driver.quit()
-        exit()
+    driver.get("https://x.com")
+    for key, value in cookies.items():
+        driver.add_cookie({"name": key, "value": value})
+    print("Cookies initialized.")
 
 def navigate_to_profile(driver, profile):
     """Go to the X/Twitter profile page."""
     profile_url = f"https://x.com/{profile}"
     driver.get(profile_url)
+    driver.save_screenshot('screenshot/1.png')
     random_sleep(4, 7)
     print(f"Navigated to profile: {profile_url}")
 
@@ -168,6 +138,9 @@ def find_tweet_elements(driver):
         all_tweets.extend(found)
     
     return list(set(all_tweets))
+
+def sort_posts(posts):
+    return sorted(posts, key=lambda x: datetime.strptime(x['date'], DATE_FORMAT), reverse=True)
 
 def gather_latest_posts(driver, profile, n):
     """
@@ -209,19 +182,16 @@ def gather_latest_posts(driver, profile, n):
 
             date = tweet_time_element.get_attribute("datetime")
 
-            collected_posts.append({"link": link, "date": date})
+            collected_posts.append({"existing": False, "link": link, "date": date})
             seen_links.add(link)
             new_count_this_round += 1
-
-            if len(collected_posts) >= n:
-                break  
 
         print(f"Collected {new_count_this_round} new tweets in this round. Total so far: {len(collected_posts)}")
 
         
         if len(collected_posts) < n:
             old_total = len(collected_posts)
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight / 2);")
             random_sleep(3, 6)
 
             
@@ -233,7 +203,7 @@ def gather_latest_posts(driver, profile, n):
             break
 
     print(f"Found {len(collected_posts)} total tweets for {profile} after {scroll_attempts} scroll attempts.")
-    return collected_posts[:n]  
+    return sort_posts(collected_posts)[:n]
 
 def fetch_embed_codes(profile, driver, posts):
     """
@@ -242,8 +212,9 @@ def fetch_embed_codes(profile, driver, posts):
     Modifies `posts` in place by adding an "embed" key.
     """
     if not posts:
-        return posts  
+        return posts, True
 
+    error = False
     os.makedirs(RSS_OUTPUT_DIR, exist_ok=True)
     rss_file = os.path.join(RSS_OUTPUT_DIR, f"{profile}.xml")
 
@@ -256,6 +227,7 @@ def fetch_embed_codes(profile, driver, posts):
     main_tab = driver.window_handles[0]
     embed_tab = driver.window_handles[1]
 
+    pattern = '<p .*?>(.*?)<\/p>'
     
     for idx, post in enumerate(posts, start=1):
         if post['link'] in existing_entries:
@@ -274,15 +246,16 @@ def fetch_embed_codes(profile, driver, posts):
                 EC.presence_of_element_located((By.CSS_SELECTOR, "textarea"))
             )
             embed_code = textarea.get_attribute("value")
-            post["embed"] = embed_code
+            post["embed"] = re.search(pattern, embed_code).group(1)
             print(f"Fetched embed")
         except Exception as e:
             print(f"Failed to get embed code for {tweet_link}: {e}")
+            error = True
             post["embed"] = None
 
     
     driver.switch_to.window(main_tab)
-    return posts
+    return posts, error
 
 def load_existing_feed_entries(rss_file):
     """
@@ -290,7 +263,7 @@ def load_existing_feed_entries(rss_file):
       - old_feed: feedparser's result
       - existing_entries: dict keyed by the entry guid
     """
-    old_feed = None
+    old_posts = []
     existing_entries = {}
     if os.path.exists(rss_file):
         old_feed = feedparser.parse(rss_file)
@@ -298,7 +271,8 @@ def load_existing_feed_entries(rss_file):
             
             guid_val = getattr(entry, 'id', None) or getattr(entry, 'guid', None) or entry.link
             existing_entries[guid_val] = entry
-    return old_feed, existing_entries
+            old_posts.append({"embed": entry.title, "existing": True, "link": entry.link, "date": datetime(*entry.published_parsed[:6]).strftime(DATE_FORMAT)})
+    return old_posts, existing_entries
 
 def generate_rss_feed(profile, posts):
     """
@@ -309,7 +283,9 @@ def generate_rss_feed(profile, posts):
     os.makedirs(RSS_OUTPUT_DIR, exist_ok=True)
     rss_file = os.path.join(RSS_OUTPUT_DIR, f"{profile}.xml")
 
-    old_feed, existing_entries = load_existing_feed_entries(rss_file)
+    old_posts, existing_entries = load_existing_feed_entries(rss_file)
+    posts = list(filter(lambda x: x['link'] not in existing_entries, posts))
+    posts = sort_posts(posts + old_posts)[:TWEETS_PER_PROFILE]
 
     fg = FeedGenerator()
     fg.title(f"{profile}".capitalize())
@@ -318,51 +294,22 @@ def generate_rss_feed(profile, posts):
     fg.language("en")
 
     
-    if old_feed is not None:
-        for entry in old_feed.entries:
-            guid_val = getattr(entry, 'id', None) or getattr(entry, 'guid', None) or entry.link
-            fe = fg.add_entry()
-            fe.title(entry.title)
-            fe.link(href=entry.link, rel="alternate")
-            fe.guid(guid_val, permalink=True)
-            fe.description(entry.description)
-            if hasattr(entry, 'published'):
-                fe.pubDate(entry.published)
-            elif hasattr(entry, 'updated'):
-                fe.pubDate(entry.updated)
-            else:
-                
-                fe.pubDate(datetime.now().astimezone())
-
-    
     new_count = 0
     for post in posts:
         guid_val = post["link"]
-        if guid_val in existing_entries:
-            print(f"Skipping existing tweet: {guid_val}")
-            continue
-
-        fe = fg.add_entry()
 
         embed_code = post.get("embed", "")
+        if not embed_code:
+            continue
         
-        try:
-            
-            title_text = chat(
-                f"come up with a short title for an rss entry for the following twitter post, "
-                f"10 words or less, answer in plain text with only the title:{embed_code}"
-            )
-        except Exception:
-            
-            title_text = f"Tweeted on {post['date']}"
-
-        fe.title(title_text.strip())
+        fe = fg.add_entry()
         fe.link(href=post["link"], rel="alternate")
         fe.guid(guid_val, permalink=True)
-        fe.description(embed_code if embed_code else "No embed code available")
+        fe.title(embed_code if embed_code else "No embed code available")
         fe.pubDate(post["date"])
 
-        new_count += 1
+        if not post["existing"]:
+            new_count += 1
 
     if new_count > 0:
         fg.rss_file(rss_file, pretty=True)
@@ -370,33 +317,57 @@ def generate_rss_feed(profile, posts):
     else:
         print("No new tweets to add. RSS feed remains unchanged.")
 
+    return posts
 
 
+def get_cool_down(posts, error):
+    if error:
+        return 30
+
+    if len(posts) < 2:
+        return 30 * 60 # 30 mins
+
+    MIN = 10 * 60 # 10 mins
+    MAX = 60 * 60 # 1 hr
+
+    now = datetime.now()
+    post1 = datetime.strptime(posts[0]['date'], DATE_FORMAT)
+    post2 = datetime.strptime(posts[1]['date'], DATE_FORMAT)
+    time_between_post = (post1 - post2).total_seconds()
+    if time_between_post > MAX: # disregard extra long periods
+        time_between_post = 0
+    last_post_time = (now - post1).total_seconds()
+
+    return min(MAX, max(MIN, max(time_between_post, last_post_time) / 2))
 
 
 def main():
     driver = initialize_browser()
     try:
-        
-        if not load_cookies(driver):
-            login_to_x(driver)
+        while True:
+            if not load_cookies(driver):
+                login_to_x(driver)
 
-        for profile in profiles:
-            
-            navigate_to_profile(driver, profile)
+            for profile in profiles:
+                
+                navigate_to_profile(driver, profile)
 
-            
-            posts = gather_latest_posts(driver, profile, TWEETS_PER_PROFILE)
+                
+                posts = gather_latest_posts(driver, profile, TWEETS_PER_PROFILE)
 
-            
-            posts = fetch_embed_codes(profile, driver, posts)
+                
+                posts, error = fetch_embed_codes(profile, driver, posts)
 
-            
-            generate_rss_feed(profile, posts)
+                
+                posts = generate_rss_feed(profile, posts)
 
-            
-            cool_down = random.uniform(AFTER_PROFILE_MIN_WAIT, AFTER_PROFILE_MAX_WAIT)
-            print(f"Cooling down for {int(cool_down)} seconds before next profile.")
+                
+                # cool_down = random.uniform(AFTER_PROFILE_MIN_WAIT, AFTER_PROFILE_MAX_WAIT)
+                # print(f"Cooling down for {int(cool_down)} seconds before next profile.")
+                # time.sleep(cool_down)
+            save_cookies(driver)
+            cool_down = get_cool_down(posts, error)
+            print(f"Cooling down for {int(cool_down)} seconds before next fetch.")
             time.sleep(cool_down)
 
     finally:

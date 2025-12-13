@@ -3,3 +3,4 @@ x_cookies.pkl
 .vscode
 __pycache__
 .env
+config.py

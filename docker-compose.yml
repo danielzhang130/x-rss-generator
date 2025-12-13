@@ -1,0 +1,16 @@
+services: 
+  ngnix:
+    image: nginx:latest   
+    ports:     
+      - "5000:80"   
+    volumes:      
+      - ./rss:/usr/share/nginx/html:ro
+    depends_on:
+      - rss
+
+  rss:   
+    image: twitter-rss:latest
+    volumes:      
+      - ./rss:/rss
+      - ./config.py:/config.py
+      - ./cookies:/cookies
