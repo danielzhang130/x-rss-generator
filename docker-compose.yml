@@ -1,16 +1,18 @@
 services: 
   ngnix:
+    restart: always
     image: nginx:latest   
     ports:     
       - "5000:80"   
     volumes:      
-      - ./rss:/usr/share/nginx/html:ro
+      - ../rss:/usr/share/nginx/html:ro
     depends_on:
       - rss
 
   rss:   
-    image: twitter-rss:latest
+    restart: always
+    build: .
     volumes:      
-      - ./rss:/rss
+      - ../rss:/rss
       - ./config.py:/config.py
       - ./cookies:/cookies

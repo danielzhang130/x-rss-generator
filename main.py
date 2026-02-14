@@ -246,7 +246,10 @@ def fetch_embed_codes(profile, driver, posts):
                 EC.presence_of_element_located((By.CSS_SELECTOR, "textarea"))
             )
             embed_code = textarea.get_attribute("value")
-            post["embed"] = re.search(pattern, embed_code).group(1)
+            embed = re.search(pattern, embed_code).group(1)
+            embed = re.sub(r'<a[^>]*>(.*?)</a>', r'\1', embed)
+            embed = re.sub(r'<br\s*/?>', '\n', embed)
+            post["embed"] = embed
             print(f"Fetched embed")
         except Exception as e:
             print(f"Failed to get embed code for {tweet_link}: {e}")
@@ -269,9 +272,9 @@ def load_existing_feed_entries(rss_file):
         old_feed = feedparser.parse(rss_file)
         for entry in old_feed.entries:
             
-            guid_val = getattr(entry, 'id', None) or getattr(entry, 'guid', None) or entry.link
+            guid_val = getattr(entry, 'guid', None)
             existing_entries[guid_val] = entry
-            old_posts.append({"embed": entry.title, "existing": True, "link": entry.link, "date": datetime(*entry.published_parsed[:6]).strftime(DATE_FORMAT)})
+            old_posts.append({"embed": entry.title, "existing": True, "link": guid_val, "date": datetime(*entry.published_parsed[:6]).strftime(DATE_FORMAT)})
     return old_posts, existing_entries
 
 def generate_rss_feed(profile, posts):
@@ -289,22 +292,22 @@ def generate_rss_feed(profile, posts):
 
     fg = FeedGenerator()
     fg.title(f"{profile}".capitalize())
-    fg.link(href=f"https://x.com/{profile}", rel="alternate")
+    fg.link(href=f"https://xcancel.com/{profile}", rel="alternate")
     fg.description(f"RSS feed of the latest tweets from {profile}.")
     fg.language("en")
 
     
     new_count = 0
     for post in posts:
-        guid_val = post["link"]
+        link = post["link"]
 
         embed_code = post.get("embed", "")
         if not embed_code:
             continue
         
         fe = fg.add_entry()
-        fe.link(href=post["link"], rel="alternate")
-        fe.guid(guid_val, permalink=True)
+        fe.link(href=link.replace("x.com", "xcancel.com"), rel="alternate")
+        fe.guid(link, permalink=True)
         fe.title(embed_code if embed_code else "No embed code available")
         fe.pubDate(post["date"])
 
