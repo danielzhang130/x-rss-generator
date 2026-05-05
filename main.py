@@ -83,11 +83,12 @@ def get_flight_status(driver):
     hover_value = None
     
     page_content = driver.page_source
-    match = re.search(r"ASPxClientHint\.Register\('\.hintStatus',\s*\(\{[^}]*'title':'([^']*)'[^}]*'content':'([^']*)'[^}]*\}\)\)", page_content)
+    title_match = re.search(r"'title':'([^']*)'", page_content)
+    content_match = re.search(r"'content':'([^']*)'", page_content)
     
-    if match:
-        flight_status = match.group(1)
-        hover_value = match.group(2)
+    if title_match:
+        flight_status = title_match.group(1)
+        hover_value = content_match.group(1) if content_match else None
     
     if flight_status:
         return {"flight_status": flight_status, "hover_tooltip_value": hover_value}
@@ -128,11 +129,14 @@ def generate_rss_feed(posts):
         new_title = posts[0].get("title", "") if posts else ""
         latest_desc = old_posts[0].get("description", "")
         new_desc = posts[0].get("description", "") if posts else ""
-        if latest_title == new_title and latest_desc == new_desc:
+        
+        title_match = latest_title == new_title
+        desc_match = (not latest_desc and not new_desc) or (latest_desc == new_desc)
+        
+        if title_match and desc_match:
             print("Flight status unchanged. RSS feed remains unchanged.")
             return old_posts
 
-    posts = list(filter(lambda x: x['link'] not in existing_entries, posts))
     posts = posts + old_posts
 
     fg = FeedGenerator()
@@ -191,6 +195,7 @@ def main():
             driver.get("https://wingmanreservations.com/Scheduling/Schedule.aspx")
             time.sleep(3)
             result = get_flight_status(driver)
+            print(result)
             error = "error" in result
             if not error:
                 flight_status = result.get("flight_status")
